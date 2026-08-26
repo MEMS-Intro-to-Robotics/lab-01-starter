@@ -139,7 +139,12 @@ def check_report_and_resolution(repo: Path) -> list[str]:
             "sync-state: REMOTE change made on GitHub",
             "sync-state: LOCAL change made on VM",
         }:
-            errors.append("sync_conflict.txt still contains an unresolved exercise state")
+            errors.append(
+                "sync_conflict.txt still contains an unresolved exercise state: "
+                "keeping the BASE, GitHub, or VM line verbatim is choosing a side, "
+                "not resolving. Replace it with one new line beginning with "
+                "'sync-state:' that says how you reconciled the two edits"
+            )
     return errors
 
 
