@@ -155,6 +155,13 @@ def _commit_records(repo: Path) -> tuple[list[tuple[str, str]], str | None]:
     return records, None
 
 
+def _normalize_subject(subject: str) -> str:
+    """Compare commit subjects forgivingly: hand-typed messages routinely pick
+    up case slips, doubled spaces, or a trailing period, none of which change
+    which exercise step the commit represents."""
+    return re.sub(r"\s+", " ", subject).strip().rstrip(".").casefold()
+
+
 def check_git_history(repo: Path) -> list[str]:
     errors: list[str] = []
     if not (repo / ".git").exists():
@@ -164,16 +171,27 @@ def check_git_history(repo: Path) -> list[str]:
     if error:
         return [f"Could not inspect Git history: {error}"]
 
-    subjects = [subject for _commit_hash, subject in records]
-    missing = [subject for subject in EXPECTED_COMMIT_SEQUENCE if subject not in subjects]
+    subjects = [_normalize_subject(subject) for _commit_hash, subject in records]
+    expected = [_normalize_subject(subject) for subject in EXPECTED_COMMIT_SEQUENCE]
+    missing = [original for original, norm in zip(EXPECTED_COMMIT_SEQUENCE, expected)
+               if norm not in subjects]
     if missing:
         errors.append("Missing required Lab 1 commits: " + ", ".join(missing))
     else:
-        positions = [subjects.index(subject) for subject in EXPECTED_COMMIT_SEQUENCE]
-        if not all(older > newer for older, newer in zip(positions, positions[1:])):
-            errors.append("Required Lab 1 commits are not in the order specified by the manual")
+        # Only the rebase outcome is graded: Part 5.6 replays the VM edit on top
+        # of the GitHub edit. Records are newest-first, so the GitHub edit must
+        # sit at a higher index. The remaining commits may be made in any order
+        # that reaches the same final state.
+        github_edit = _normalize_subject("Edit sync state on GitHub")
+        vm_edit = _normalize_subject("Edit sync state on VM")
+        if subjects.index(github_edit) < subjects.index(vm_edit):
+            errors.append(
+                "'Edit sync state on VM' must sit on top of 'Edit sync state on GitHub'; "
+                "recover with a rebase so the GitHub commit is preserved underneath"
+            )
 
-    subject_to_hash = {subject: commit_hash for commit_hash, subject in records}
+    subject_to_hash = {_normalize_subject(subject): commit_hash
+                       for commit_hash, subject in records}
     expected_paths = {
         "Add remote sync note": "README.md",
         "Add sync conflict baseline": "sync_conflict.txt",
@@ -181,7 +199,7 @@ def check_git_history(repo: Path) -> list[str]:
         "Edit sync state on VM": "sync_conflict.txt",
     }
     for subject, expected_path in expected_paths.items():
-        commit_hash = subject_to_hash.get(subject)
+        commit_hash = subject_to_hash.get(_normalize_subject(subject))
         if commit_hash is None:
             continue
         changed = _run_git(repo, "show", "--format=", "--name-only", commit_hash)
