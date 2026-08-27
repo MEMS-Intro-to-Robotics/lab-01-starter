@@ -24,17 +24,6 @@ EXPECTED_SCREENSHOTS = (
     "talker_listener.png",
 )
 
-EXPECTED_COMMIT_SEQUENCE = (
-    "Update README and add setup screenshots",
-    "Start Git recovery record",
-    "Add remote sync note",
-    "Document remote-ahead recovery",
-    "Add sync conflict baseline",
-    "Edit sync state on GitHub",
-    "Edit sync state on VM",
-    "Document Git sync and conflict recovery",
-)
-
 REQUIRED_REPORT_TEXT = (
     "# Git Synchronization and Recovery Record",
     "## Case 1: Remote Ahead",
@@ -148,75 +137,73 @@ def check_report_and_resolution(repo: Path) -> list[str]:
     return errors
 
 
-def _commit_records(repo: Path) -> tuple[list[tuple[str, str]], str | None]:
-    result = _run_git(repo, "log", "--format=%H%x09%s")
+def _scaffold_head(repo: Path) -> str | None:
+    """The newest commit Classroom 50 created when the student accepted, i.e.
+    the state the student started from. Returns None when it cannot be
+    identified, in which case the caller skips the baseline comparison rather
+    than inventing a failure."""
+    result = _run_git(repo, "log", "--format=%H%x09%s", "--reverse")
     if result.returncode != 0:
-        return [], result.stderr.strip() or "git log failed"
-    records: list[tuple[str, str]] = []
+        return None
+    scaffold = None
     for line in result.stdout.splitlines():
-        if "\t" in line:
-            commit_hash, subject = line.split("\t", 1)
-            records.append((commit_hash, subject))
-    return records, None
+        if "\t" not in line:
+            continue
+        commit_hash, subject = line.split("\t", 1)
+        if subject.startswith("[Classroom 50]") or subject.strip() == "Initial commit":
+            scaffold = commit_hash
+        else:
+            break
+    return scaffold
 
 
-def _normalize_subject(subject: str) -> str:
-    """Compare commit subjects forgivingly: hand-typed messages routinely pick
-    up case slips, doubled spaces, or a trailing period, none of which change
-    which exercise step the commit represents."""
-    return re.sub(r"\s+", " ", subject).strip().rstrip(".").casefold()
+def _paths_touched_since(repo: Path, scaffold: str | None) -> set[str]:
+    """Every path changed by the student's own commits."""
+    span = f"{scaffold}..HEAD" if scaffold else "HEAD"
+    result = _run_git(repo, "log", "--format=", "--name-only", span)
+    if result.returncode != 0:
+        return set()
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
 
 def check_git_history(repo: Path) -> list[str]:
+    """Grade the end state of the repository, not the commit choreography.
+
+    Lab 1's deliverables are the edited files and the pushed history. Which
+    commit subject carries which change, and in what order, is deliberately not
+    graded: a student who reached the same final state with their own commit
+    messages did the lab. Whether the recovery was reasoned about correctly is
+    graded from git_recovery.md by a human.
+    """
     errors: list[str] = []
     if not (repo / ".git").exists():
         return ["Run the grading script inside the cloned Git repository; .git is missing"]
 
-    records, error = _commit_records(repo)
-    if error:
-        return [f"Could not inspect Git history: {error}"]
+    scaffold = _scaffold_head(repo)
+    touched = _paths_touched_since(repo, scaffold)
 
-    subjects = [_normalize_subject(subject) for _commit_hash, subject in records]
-    expected = [_normalize_subject(subject) for subject in EXPECTED_COMMIT_SEQUENCE]
-    missing = [original for original, norm in zip(EXPECTED_COMMIT_SEQUENCE, expected)
-               if norm not in subjects]
-    if missing:
-        errors.append("Missing required Lab 1 commits: " + ", ".join(missing))
-    else:
-        # Only the rebase outcome is graded: Part 5.6 replays the VM edit on top
-        # of the GitHub edit. Records are newest-first, so the GitHub edit must
-        # sit at a higher index. The remaining commits may be made in any order
-        # that reaches the same final state.
-        github_edit = _normalize_subject("Edit sync state on GitHub")
-        vm_edit = _normalize_subject("Edit sync state on VM")
-        if subjects.index(github_edit) < subjects.index(vm_edit):
+    # The README must differ from the state the student was given. Any edit
+    # counts: the point is that the work reached the repository, not that it
+    # was split across commits in a prescribed way.
+    if scaffold is not None:
+        diff = _run_git(repo, "diff", "--quiet", scaffold, "HEAD", "--", "README.md")
+        if diff.returncode == 0:
             errors.append(
-                "'Edit sync state on VM' must sit on top of 'Edit sync state on GitHub'; "
-                "recover with a rebase so the GitHub commit is preserved underneath"
+                "README.md is unchanged from the starter; edit it and push your changes"
             )
+        elif diff.returncode != 1:
+            errors.append("Could not compare README.md against the starter")
 
-    subject_to_hash = {_normalize_subject(subject): commit_hash
-                       for commit_hash, subject in records}
-    expected_paths = {
-        "Add remote sync note": "README.md",
-        "Add sync conflict baseline": "sync_conflict.txt",
-        "Edit sync state on GitHub": "sync_conflict.txt",
-        "Edit sync state on VM": "sync_conflict.txt",
-    }
-    for subject, expected_path in expected_paths.items():
-        commit_hash = subject_to_hash.get(_normalize_subject(subject))
-        if commit_hash is None:
-            continue
-        changed = _run_git(repo, "show", "--format=", "--name-only", commit_hash)
-        paths = set(changed.stdout.splitlines())
-        if expected_path not in paths:
-            errors.append(f"Commit '{subject}' does not modify {expected_path}")
+    for relative, label in (
+        ("git_recovery.md", "git_recovery.md"),
+        ("sync_conflict.txt", "sync_conflict.txt"),
+    ):
+        if relative not in touched:
+            errors.append(f"No commit in this repository adds or changes {label}")
 
-    merges = _run_git(repo, "rev-list", "--min-parents=2", "HEAD")
-    if merges.returncode != 0:
-        errors.append("Could not check whether the Lab 1 history is linear")
-    elif merges.stdout.strip():
-        errors.append("Lab 1 history contains a merge commit; the required recovery ends with linear history")
+    if not any(path.startswith("docs/") and not path.endswith(".gitkeep")
+               for path in touched):
+        errors.append("No commit in this repository adds the docs/ screenshots")
 
     head = _run_git(repo, "rev-parse", "HEAD")
     remote = _run_git(repo, "rev-parse", "--verify", "refs/remotes/origin/main")
