@@ -41,12 +41,30 @@ REQUIRED_REPORT_TEXT = (
     "Final graph output:",
 )
 
+UNRESOLVED_STATES = (
+    "sync-state: BASE",
+    "sync-state: REMOTE change made on GitHub",
+    "sync-state: LOCAL change made on VM",
+)
+
 STARTER_MARKERS = ("[Your Name]", "Replace this paragraph", "YOUR_NETID")
 CONFLICT_MARKERS = ("<<<<<<<", "=======", ">>>>>>>")
 
 
 def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _normalize_prose(text: str) -> str:
+    """Compare report prompts forgivingly. Students fill the record in by
+    editing the prompt lines themselves, so they reasonably bold a label, drop
+    the backticks around `git status`, fix its capitalisation, or let the
+    editor rewrap a long line. None of that changes whether the prompt was
+    answered. Whether the answer is any good is graded by a human."""
+    text = re.sub(r"[*_`]+", "", text)
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s+:", ":", text)
+    return text.casefold()
 
 
 def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -109,7 +127,9 @@ def check_report_and_resolution(repo: Path) -> list[str]:
     report_path = repo / "git_recovery.md"
     if report_path.is_file():
         report = _read_text(report_path)
-        missing = [item for item in REQUIRED_REPORT_TEXT if item not in report]
+        normalized_report = _normalize_prose(report)
+        missing = [item for item in REQUIRED_REPORT_TEXT
+                   if _normalize_prose(item) not in normalized_report]
         if missing:
             errors.append("git_recovery.md is missing required headings or prompts: " + ", ".join(missing))
         if len(re.findall(r"\b[\w'-]+\b", report)) < 80:
@@ -121,13 +141,10 @@ def check_report_and_resolution(repo: Path) -> list[str]:
         if any(marker in conflict for marker in CONFLICT_MARKERS):
             errors.append("sync_conflict.txt still contains Git conflict markers")
         lines = [line.strip() for line in conflict.splitlines() if line.strip()]
-        if len(lines) != 1 or not lines[0].startswith("sync-state:"):
+        resolved = _normalize_prose(lines[0]) if len(lines) == 1 else ""
+        if len(lines) != 1 or not resolved.startswith("sync-state:"):
             errors.append("sync_conflict.txt must contain one resolved line beginning with 'sync-state:'")
-        elif lines[0] in {
-            "sync-state: BASE",
-            "sync-state: REMOTE change made on GitHub",
-            "sync-state: LOCAL change made on VM",
-        }:
+        elif resolved in {_normalize_prose(state) for state in UNRESOLVED_STATES}:
             errors.append(
                 "sync_conflict.txt still contains an unresolved exercise state: "
                 "keeping the BASE, GitHub, or VM line verbatim is choosing a side, "
